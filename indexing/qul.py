@@ -24,23 +24,19 @@ manager = client.corpus_manager
 
 def split_html_by_tags(html):
     """
-    Split HTML content into individual elements or text.
+    Split HTML content into individual <h1> and <p> elements.
     
     Args:
         html (str): The HTML content to split.
     
     Returns:
-        list: A list of split elements and text nodes.
+        list: A list of split elements containing <h1> and <p> tags.
     """
     soup = BeautifulSoup(html, 'html.parser')
     split_elements = []
-    for element in soup.recursiveChildGenerator():
-        if element.name:  # It's a tag
-            split_elements.append(str(element))
-        elif element.string:  # It's a text node
-            split_elements.append(element.string.strip())
-    # Filter out empty strings
-    split_elements = [element for element in split_elements if element]
+    for element in soup.find_all(['h1','h2','p']):
+        split_elements.append(str(element.get_text()))
+    lg.info(f"Split elements: {split_elements}")
     return split_elements
 
 def download_tafsir(tafsir_name: str) -> None:
@@ -187,4 +183,4 @@ def convert_to_vectara(tafsir_name: str, surah_range: tuple[int, int] = (1, 2)) 
 # Example usage
 download_tafsir("ibn-kathir")
 generate_ayah_mapping("ibn-kathir")
-convert_to_vectara("ibn-kathir", surah_range=(105, 106))
+convert_to_vectara("ibn-kathir", surah_range=(1, 2))
