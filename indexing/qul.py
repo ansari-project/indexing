@@ -65,47 +65,64 @@ def convert_to_vectara(tafsir_name):
     Convert tafsir sqlite file to vectara format
     """
     # Open sqlite file
-    conn = sqlite3.connect(f"downloads/{tafsir_name}.sqlite")
-    cursor = conn.cursor()
 
-    # Example SQLite call: Fetch all tables
-    cursor.execute("SELECT ayah_key, group_ayah_key, from_ayah, to_ayah, ayah_keys, text from tafsir;")
-    ayahs = cursor.fetchall()
-    print(f"Ayahs in {tafsir_name}: {len(ayahs)}")
-    v_ayahs = []
-    core_doc = {
-        "type": "core",
-        "id": tafsir_name,
-        "document_parts": v_ayahs
-    }
-
-
-
-    for ayah in ayahs:
-        tags = split_html_by_tags(ayah[5])
-        lg.info("Processing ayah: " + ayah[0])
-        for tag in tags:
-            #lg.info("Processing tag: " + tag)
-            v_ayahs.append({
-                "metadata": {
-                    "ayah_key": ayah[0],
-                    "group_ayah_key": ayah[1],
-                    "from_ayah": ayah[2],
-                    "to_ayah": ayah[3],
-                    "ayah_keys": ayah[4],
-                },
-                "text": tag
-            })
-
-    lg.info(f'Total parts: {len(v_ayahs)}')
-    json.dump(core_doc, open(f"downloads/{tafsir_name}.json", "w"), indent=4)
-    client.documents.create(corpus_key=CRP_ID, request=core_doc, request_timeout = 900, request_options={"timeout": 900})
+    for surah in range(105, 115):
+        conn = sqlite3.connect(f"downloads/{tafsir_name}.sqlite")
+        cursor = conn.cursor()
+        # Example SQLite call: Fetch all tables
+        cursor.execute("SELECT ayah_key, group_ayah_key, from_ayah, to_ayah, ayah_keys, text FROM tafsir WHERE ayah_key LIKE ?;", (f'{surah}:%',))
+        ayahs = cursor.fetchall()        
+        v_ayahs = []
+        core_doc = {
+            "type": "core",
+            "id": f'{tafsir_name}-{surah}',
+            "metadata": {
+                "tafsir": tafsir_name,
+                "surah": surah
+            },
+            "document_parts": v_ayahs
+        }
 
 
 
+        for ayah in ayahs:
+            tags = split_html_by_tags(ayah[5])
+            lg.info("Processing ayah: " + ayah[0])
+            for tag in tags:
+                #lg.info("Processing tag: " + tag)
+                v_ayahs.append({
+                    "metadata": {
+                        "ayah_key": ayah[0],
+                        "group_ayah_key": ayah[1],
+                        "from_ayah": ayah[2],
+                        "to_ayah": ayah[3],
+                        "ayah_keys": ayah[4],
+                    },
+                    "text": tag
+                })
+            if len(v_ayahs) == 0:
+                lg.info(f'No parts found for surah {surah}')
+                v_ayahs.append({
+                    "metadata": {
+                        "ayah_key": ayah[0],
+                        "group_ayah_key": ayah[1],
+                        "from_ayah": ayah[2],
+                        "to_ayah": ayah[3],
+                        "ayah_keys": ayah[4],
+                    },
+                    "text": ""
+                })
 
-    # Close the connection
-    conn.close()
+        lg.info(f'Total parts: {len(v_ayahs)}')
+        lg.info(f'Uploading surah {surah} to Vectara')
+        json.dump(core_doc, open(f"downloads/{tafsir_name}-{surah}.json", "w"), indent=4)
+        client.documents.create(corpus_key=CRP_ID, request=core_doc, request_timeout = 900, request_options={"timeout": 900})
+
+
+
+
+        # Close the connection
+        conn.close()
 
 # Example usage
 download_tafsir("ibn-kathir")
