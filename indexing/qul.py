@@ -226,7 +226,7 @@ def convert_to_vectara(tafsir_name: str, surah_range: tuple[int, int] = (1, 2)) 
 # Example usage
 download_tafsir("ibn-kathir")
 generate_ayah_mapping("ibn-kathir")
-convert_to_vectara("ibn-kathir", surah_range=(1, 115))
+convert_to_vectara("ibn-kathir", surah_range=(114, 115))
 
 # Make a test query to check if the document was uploaded successfully
 response = client.corpora.query(
@@ -235,7 +235,7 @@ response = client.corpora.query(
     # Filter the query to only search ayah 55:58 --> 55058 as an ayah_int
     search={
         "limit": 100,
-        "metadata_filter": "part.to_ayah_int <= 55058 and part.from_ayah_int >= 55058",
+        "metadata_filter": "part.to_ayah_int >= 55058 and part.from_ayah_int <= 55058",
     },
 )
 
