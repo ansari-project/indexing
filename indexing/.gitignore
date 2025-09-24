@@ -59,3 +59,6 @@ log.txt
 # Output files (keep sample outputs)
 sample_output_data/**/*.json
 !sample_output_data/fiqh_cards/sample_claude.json
+
+# Python version
+.python-version
