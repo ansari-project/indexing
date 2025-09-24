@@ -1,4 +1,0 @@
-requests
-vectara
-bs4
-ruff
