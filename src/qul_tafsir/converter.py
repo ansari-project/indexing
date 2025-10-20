@@ -391,7 +391,7 @@ class TafsirConverter:
 
     def ingest_to_agentset(self, tafsir_name: str, output_dir: Optional[Path] = None, api_token: Optional[str] = None, namespace_id: Optional[str] = None) -> None:
         """
-        Ingest generated tafsir files into Agentset using individual uploads.
+        Ingest generated tafsir files into Agentset using batch upload with job tracking.
 
         Args:
             tafsir_name: The name of the tafsir to ingest
@@ -400,77 +400,302 @@ class TafsirConverter:
             namespace_id: Agentset namespace ID (uses AGENTSET_NAMESPACE_ID env var if not provided)
         """
         import os
+        import time
+        import requests
+        from dotenv import load_dotenv
         from agentset import Agentset
+        from agentset.models import BatchPayload, BatchPayloadItemManagedFile
+
+        # Load environment variables
+        load_dotenv()
 
         # Get API credentials
         token = api_token or os.getenv("AGENTSET_API_TOKEN")
         namespace = namespace_id or os.getenv("AGENTSET_NAMESPACE_ID")
 
         if not token:
-            self.logger.error("AGENTSET_API_TOKEN not provided and not found in environment")
+            print("❌ AGENTSET_API_TOKEN not provided", flush=True)
             return
         if not namespace:
-            self.logger.error("AGENTSET_NAMESPACE_ID not provided and not found in environment")
+            print("❌ AGENTSET_NAMESPACE_ID not provided", flush=True)
             return
 
         output_base = output_dir or Path("./output").absolute()
         sections_dir = output_base / tafsir_name / "sections"
 
         if not sections_dir.exists():
-            self.logger.error(f"Sections directory not found: {sections_dir}")
+            print(f"❌ Sections directory not found: {sections_dir}", flush=True)
             return
 
         # Initialize Agentset client
         client = Agentset(token=token, namespace_id=namespace)
 
+        # Checkpoint file for resuming
+        checkpoint_file = output_base / f".agentset-checkpoint-{tafsir_name}.json"
+
+        # Check for existing checkpoint
+        uploaded_keys = []
+        if checkpoint_file.exists():
+            print(f"\n💾 Found checkpoint file from previous run", flush=True)
+            try:
+                with open(checkpoint_file, 'r') as f:
+                    checkpoint_data = json.load(f)
+                    uploaded_keys = [
+                        BatchPayloadItemManagedFile(key=item['key'], file_name=item['file_name'])
+                        for item in checkpoint_data['uploaded_keys']
+                    ]
+                    uploaded_count = checkpoint_data['uploaded_count']
+                    skipped_count = 0  # No failures when loading from checkpoint
+                print(f"✅ Loaded {uploaded_count} uploaded files from checkpoint", flush=True)
+                print(f"⏭️  Skipping to Phase 2 (job creation)...", flush=True)
+            except Exception as e:
+                print(f"⚠️  Failed to load checkpoint: {e}", flush=True)
+                print(f"🔄 Starting fresh upload...", flush=True)
+                uploaded_keys = []
+
         # Find all text files
         text_files = list(sections_dir.rglob("*.txt"))
-        self.logger.info(f"Found {len(text_files)} section files to ingest")
+        total_files = len(text_files)
 
-        uploaded_count = 0
-        skipped_count = 0
+        # Phase 1: Upload files and collect keys (skip if checkpoint loaded)
+        if not uploaded_keys:
+            print(f"\n📊 Found {total_files} section files", flush=True)
+            print("\n📤 PHASE 1: Uploading files to S3...", flush=True)
+            uploaded_count = 0
+            skipped_count = 0
+            current_surah = None
 
-        for text_file in text_files:
-            metadata_file = text_file.parent / f"{text_file.stem}.metadata.json"
+            for idx, text_file in enumerate(text_files, 1):
+                metadata_file = text_file.parent / f"{text_file.stem}.metadata.json"
 
-            if not metadata_file.exists():
-                self.logger.warning(f"Missing metadata for: {text_file}, skipping")
-                skipped_count += 1
-                continue
+                if not metadata_file.exists():
+                    print(f"⚠️  Missing metadata for {text_file.name}", flush=True)
+                    skipped_count += 1
+                    continue
 
+                try:
+                    with open(text_file, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    with open(metadata_file, "r", encoding="utf-8") as f:
+                        metadata = json.load(f)
+
+                    # Show surah progress
+                    surah = metadata.get('surah')
+                    if surah != current_surah:
+                        current_surah = surah
+                        print(f"\n📖 Surah {surah}", flush=True)
+
+                    # Upload to S3
+                    file_size = text_file.stat().st_size
+                    upload_result = client.uploads.create(
+                        file_name=text_file.name,
+                        content_type="text/plain",
+                        file_size=float(file_size)
+                    )
+
+                    response = requests.put(
+                        upload_result.data.url,
+                        data=content.encode('utf-8'),
+                        headers={"Content-Type": "text/plain"}
+                    )
+                    response.raise_for_status()
+
+                    uploaded_keys.append(BatchPayloadItemManagedFile(
+                        key=upload_result.data.key,
+                        file_name=text_file.name
+                    ))
+                    uploaded_count += 1
+
+                    # Progress every 50 files
+                    if idx % 50 == 0 or idx == total_files:
+                        print(f"   {idx}/{total_files} uploaded", flush=True)
+
+                except Exception as e:
+                    print(f"   ❌ {text_file.name}: {str(e)}", flush=True)
+                    skipped_count += 1
+
+            # Save checkpoint after Phase 1
+            print(f"\n💾 Saving checkpoint...", flush=True)
+            checkpoint_data = {
+                'uploaded_count': uploaded_count,
+                'uploaded_keys': [{'key': k.key, 'file_name': k.file_name} for k in uploaded_keys]
+            }
+            with open(checkpoint_file, 'w') as f:
+                json.dump(checkpoint_data, f)
+            print(f"✅ Checkpoint saved ({uploaded_count} files)", flush=True)
+
+        if not uploaded_keys:
+            print("\n❌ No files uploaded successfully", flush=True)
+            return
+
+        print(f"\n✅ Upload complete: {uploaded_count} files ({skipped_count} failed)", flush=True)
+
+        # Phase 2: Create batch ingest job
+        print(f"\n🔄 PHASE 2: Creating ingest job...", flush=True)
+        try:
+            batch_payload = BatchPayload(items=uploaded_keys)
+            job = client.ingest_jobs.create(
+                payload=batch_payload,
+                name=f"{tafsir_name}-tafsir"
+            )
+            job_id = job.data.id
+            print(f"✅ Job created: {job_id}", flush=True)
+        except Exception as e:
+            print(f"❌ Failed to create job: {str(e)}", flush=True)
+            return
+
+        # Phase 3: Poll job status
+        print(f"\n⏳ PHASE 3: Processing ({uploaded_count} sections)...", flush=True)
+        poll_count = 0
+        max_polls = 600  # 10 minutes
+
+        while poll_count < max_polls:
             try:
-                # Read content and metadata
-                with open(text_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                with open(metadata_file, "r", encoding="utf-8") as f:
-                    metadata = json.load(f)
+                job_status = client.ingest_jobs.get(job_id=job_id)
+                status = job_status.data.status
 
-                # Get file size
-                file_size = text_file.stat().st_size
+                if status == "COMPLETED":
+                    print(f"\n🎉 SUCCESS! All {uploaded_count} sections ingested", flush=True)
+                    # Clean up checkpoint file
+                    if checkpoint_file.exists():
+                        checkpoint_file.unlink()
+                        print(f"🗑️  Checkpoint file deleted", flush=True)
+                    return
+                elif status == "FAILED":
+                    print(f"\n❌ Job FAILED", flush=True)
+                    if hasattr(job_status, 'error'):
+                        print(f"   {job_status.error}", flush=True)
+                    print(f"💾 Checkpoint preserved - you can retry from Phase 2", flush=True)
+                    return
+                elif poll_count % 10 == 0:
+                    print(f"   {status}... ({poll_count}s)", flush=True)
 
-                # Create presigned URL for upload
-                self.logger.info(f"Uploading: {text_file.name}")
-                upload_result = client.uploads.create(
-                    file_name=text_file.name,
-                    content_type="text/plain",
-                    file_size=float(file_size)
-                )
-
-                # Upload the file using the presigned URL
-                import requests
-                headers = {"Content-Type": "text/plain"}
-                response = requests.put(
-                    upload_result.upload_url,
-                    data=content.encode('utf-8'),
-                    headers=headers
-                )
-                response.raise_for_status()
-
-                uploaded_count += 1
-                self.logger.info(f"✓ Uploaded: {text_file.name}")
+                time.sleep(1)
+                poll_count += 1
 
             except Exception as e:
-                self.logger.error(f"Failed to upload {text_file.name}: {str(e)}")
-                skipped_count += 1
+                print(f"   ⚠️  {str(e)}", flush=True)
+                time.sleep(1)
+                poll_count += 1
 
-        self.logger.info(f"Ingestion complete: {uploaded_count} uploaded, {skipped_count} skipped")
+        print(f"\n⏱️  Timeout after {poll_count}s - check job {job_id}", flush=True)
+
+    def deduplicate_agentset(self, api_token: Optional[str] = None, namespace_id: Optional[str] = None, dry_run: bool = True, keep: str = "oldest") -> None:
+        """Find and remove duplicate documents from Agentset.
+
+        Args:
+            api_token: Agentset API token (or set AGENTSET_API_TOKEN env var)
+            namespace_id: Agentset namespace ID (or set AGENTSET_NAMESPACE_ID env var)
+            dry_run: If True, only preview duplicates without deleting
+            keep: Which duplicate to keep - 'oldest' or 'newest'
+        """
+        import os
+        from dotenv import load_dotenv
+        from collections import defaultdict
+
+        load_dotenv()
+
+        # Get credentials
+        api_token = api_token or os.getenv("AGENTSET_API_TOKEN")
+        namespace_id = namespace_id or os.getenv("AGENTSET_NAMESPACE_ID")
+
+        if not api_token or not namespace_id:
+            raise ValueError("AGENTSET_API_TOKEN and AGENTSET_NAMESPACE_ID must be set")
+
+        # Initialize client
+        from agentset import Agentset
+        client = Agentset(token=api_token, namespace_id=namespace_id)
+
+        print(f"\n📊 Fetching all documents from Agentset...", flush=True)
+
+        # Fetch all documents with pagination
+        all_docs = []
+        cursor = None
+        page = 1
+
+        while True:
+            print(f"   Fetching page {page}...", flush=True)
+            response = client.documents.list(cursor=cursor, per_page=100)
+
+            if not response or not response.result or not response.result.data:
+                break
+
+            all_docs.extend(response.result.data)
+
+            # Check if there are more pages
+            if not response.result.pagination.has_more:
+                break
+
+            cursor = response.result.pagination.next_cursor
+            page += 1
+
+        print(f"✅ Found {len(all_docs)} total documents", flush=True)
+
+        # Group by name
+        by_name = defaultdict(list)
+        for doc in all_docs:
+            name = doc.name if doc.name else "unnamed"
+            by_name[name].append(doc)
+
+        # Find duplicates
+        duplicates = {name: docs for name, docs in by_name.items() if len(docs) > 1}
+
+        if not duplicates:
+            print(f"\n🎉 No duplicates found!", flush=True)
+            return
+
+        # Calculate statistics
+        total_duplicate_count = sum(len(docs) - 1 for docs in duplicates.values())
+        print(f"\n🔍 Found {len(duplicates)} unique files with duplicates", flush=True)
+        print(f"   Total duplicate documents: {total_duplicate_count}", flush=True)
+
+        # Preview or delete
+        if dry_run:
+            print(f"\n📋 DRY RUN - Preview of duplicates (keeping {keep}):\n", flush=True)
+
+            for name, docs in sorted(duplicates.items()):
+                # Sort by created_at
+                docs_sorted = sorted(docs, key=lambda d: d.created_at)
+
+                if keep == "oldest":
+                    keep_doc = docs_sorted[0]
+                    delete_docs = docs_sorted[1:]
+                else:  # newest
+                    keep_doc = docs_sorted[-1]
+                    delete_docs = docs_sorted[:-1]
+
+                print(f"📄 {name} ({len(docs)} copies)", flush=True)
+                print(f"   ✓ KEEP: {keep_doc.id} (created: {keep_doc.created_at})", flush=True)
+                for doc in delete_docs:
+                    print(f"   ✗ DELETE: {doc.id} (created: {doc.created_at})", flush=True)
+                print(flush=True)
+
+            print(f"\n💡 To actually delete, run with --no-dry-run", flush=True)
+
+        else:
+            print(f"\n🗑️  Deleting duplicates (keeping {keep})...\n", flush=True)
+            deleted_count = 0
+
+            for name, docs in sorted(duplicates.items()):
+                # Sort by created_at
+                docs_sorted = sorted(docs, key=lambda d: d.created_at)
+
+                if keep == "oldest":
+                    keep_doc = docs_sorted[0]
+                    delete_docs = docs_sorted[1:]
+                else:  # newest
+                    keep_doc = docs_sorted[-1]
+                    delete_docs = docs_sorted[:-1]
+
+                print(f"📄 {name} ({len(docs)} copies)", flush=True)
+                print(f"   ✓ Keeping: {keep_doc.id}", flush=True)
+
+                for doc in delete_docs:
+                    try:
+                        client.documents.delete(document_id=doc.id)
+                        print(f"   ✗ Deleted: {doc.id}", flush=True)
+                        deleted_count += 1
+                    except Exception as e:
+                        print(f"   ⚠️  Failed to delete {doc.id}: {e}", flush=True)
+
+            print(f"\n✅ Deleted {deleted_count} duplicate documents", flush=True)

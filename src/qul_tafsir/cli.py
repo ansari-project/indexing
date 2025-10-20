@@ -104,5 +104,27 @@ def ingest_agentset(
     console.print("[green]✓ Ingestion complete![/green]")
 
 
+@app.command()
+def deduplicate_agentset(
+    api_token: str = typer.Option(None, help="Agentset API token (or set AGENTSET_API_TOKEN)"),
+    namespace_id: str = typer.Option(None, help="Agentset namespace ID (or set AGENTSET_NAMESPACE_ID)"),
+    dry_run: bool = typer.Option(True, help="Preview duplicates without deleting"),
+    keep: str = typer.Option("oldest", help="Which to keep: 'oldest' or 'newest'")
+):
+    """Find and remove duplicate documents in Agentset."""
+    console.print(f"[bold blue]Scanning for duplicates in Agentset...[/bold blue]")
+    converter = TafsirConverter()
+    converter.deduplicate_agentset(
+        api_token=api_token,
+        namespace_id=namespace_id,
+        dry_run=dry_run,
+        keep=keep
+    )
+    if dry_run:
+        console.print("[yellow]✓ Dry run complete! Use --no-dry-run to actually delete.[/yellow]")
+    else:
+        console.print("[green]✓ Deduplication complete![/green]")
+
+
 if __name__ == "__main__":
     app()
