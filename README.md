@@ -70,6 +70,55 @@ PYTHONPATH=src uv run python -m fiqh_card_converter.claude_cli convert \
     sample_output_data/fiqh_cards
 ```
 
+### Qul Tafsir Converter
+
+The Qul Tafsir converter processes tafsir (Quranic commentary) data and uploads it to Agentset for RAG (Retrieval Augmented Generation) applications.
+
+#### Convert Tafsir to Agentset Format
+
+To generate individual text files with metadata:
+```bash
+uv run python -m qul_tafsir.cli convert-agentset ibn-kathir --start-surah 1 --end-surah 115
+```
+
+#### Upload to Agentset
+
+To upload all generated files to Agentset:
+```bash
+uv run python -m qul_tafsir.cli ingest-agentset ibn-kathir
+```
+
+This command:
+- Uploads all section files to S3
+- Creates a batch ingest job
+- Monitors job status until completion
+- Supports checkpoint/resume on failure
+
+Environment variables required:
+```env
+AGENTSET_API_TOKEN=your-agentset-token
+AGENTSET_NAMESPACE_ID=your-namespace-id
+```
+
+#### Remove Duplicates
+
+If you accidentally upload duplicates, you can clean them up:
+
+Preview duplicates (dry run):
+```bash
+uv run python -m qul_tafsir.cli deduplicate-agentset
+```
+
+Actually delete duplicates (keeps oldest by default):
+```bash
+uv run python -m qul_tafsir.cli deduplicate-agentset --no-dry-run
+```
+
+Keep newest instead of oldest:
+```bash
+uv run python -m qul_tafsir.cli deduplicate-agentset --no-dry-run --keep newest
+```
+
 ### JSON Output Structure
 
 The converter extracts the following information from each fiqh issue:
