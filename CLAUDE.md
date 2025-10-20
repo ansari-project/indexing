@@ -22,7 +22,7 @@ This repository contains converters for Islamic text data, specifically:
 ## Code Standards
 
 ### Python Patterns
-- Use `PYTHONPATH=src` when running modules
+- Use `uv run python` to run modules (automatically handles environment and dependencies)
 - All converters should be under `src/` directory
 - Use python-dotenv for environment variables
 - Follow modular design with separate converter and CLI files
