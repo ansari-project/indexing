@@ -55,9 +55,24 @@ class TafsirConverter:
 
         Returns:
             The ayah int.
+
+        Raises:
+            ValueError: If ayah_key format is invalid.
         """
-        surah, ayah = ayah_key.split(":")
-        return int(surah) * 1000 + int(ayah)
+        if not ayah_key or ":" not in ayah_key:
+            raise ValueError(f"Invalid ayah_key format: '{ayah_key}'. Expected 'surah:ayah'")
+
+        parts = ayah_key.split(":")
+        if len(parts) != 2:
+            raise ValueError(f"Invalid ayah_key format: '{ayah_key}'. Expected exactly one ':'")
+
+        try:
+            surah = int(parts[0])
+            ayah = int(parts[1])
+        except ValueError:
+            raise ValueError(f"Invalid ayah_key format: '{ayah_key}'. Surah and ayah must be integers")
+
+        return surah * 1000 + ayah
 
     def ayah_int_to_key(self, ayah_int: int) -> str:
         """
@@ -331,17 +346,25 @@ class TafsirConverter:
                 for section in sections:
                     ayah_key, group_ayah_key, from_ayah, to_ayah, ayah_keys, html_text = section
 
-                    # Strip HTML tags to get plain text
-                    soup = BeautifulSoup(html_text, "html.parser")
+                    # Check for NULL or empty html_text from database
+                    if not html_text:
+                        self.logger.warning(f"No HTML for section {group_ayah_key}, skipping")
+                        continue
+
+                    # Strip HTML tags to get plain text using faster lxml parser
+                    soup = BeautifulSoup(html_text, "lxml")
                     plain_text = soup.get_text(separator="\n", strip=True)
 
                     if not plain_text:
                         self.logger.warning(f"Empty text for section {group_ayah_key}, skipping")
                         continue
 
+                    # Sanitize group_ayah_key for Windows-compatible filenames (replace : with -)
+                    safe_id = group_ayah_key.replace(":", "-")
+
                     # Generate filenames
-                    section_filename = f"section-{group_ayah_key}.txt"
-                    metadata_filename = f"section-{group_ayah_key}.metadata.json"
+                    section_filename = f"section-{safe_id}.txt"
+                    metadata_filename = f"section-{safe_id}.metadata.json"
 
                     # Write text file
                     text_path = surah_dir / section_filename
