@@ -391,7 +391,7 @@ class TafsirConverter:
 
     def ingest_to_agentset(self, tafsir_name: str, output_dir: Optional[Path] = None, api_token: Optional[str] = None, namespace_id: Optional[str] = None) -> None:
         """
-        Ingest generated tafsir files into Agentset using batch upload with job tracking.
+        Ingest generated tafsir files into Agentset using batch upload per surah.
 
         Args:
             tafsir_name: The name of the tafsir to ingest
@@ -400,11 +400,10 @@ class TafsirConverter:
             namespace_id: Agentset namespace ID (uses AGENTSET_NAMESPACE_ID env var if not provided)
         """
         import os
-        import time
         import requests
         from dotenv import load_dotenv
         from agentset import Agentset
-        from agentset.models import BatchPayload, BatchPayloadItemManagedFile
+        from agentset.models import BatchPayload, BatchPayloadItemManagedFile, IngestJobConfig
 
         # Load environment variables
         load_dotenv()
@@ -430,42 +429,33 @@ class TafsirConverter:
         # Initialize Agentset client
         client = Agentset(token=token, namespace_id=namespace)
 
-        # Checkpoint file for resuming
-        checkpoint_file = output_base / f".agentset-checkpoint-{tafsir_name}.json"
+        # Get all surah directories
+        surah_dirs = sorted([d for d in sections_dir.iterdir() if d.is_dir() and d.name.startswith("surah-")])
+        
+        if not surah_dirs:
+            print(f"❌ No surah directories found in {sections_dir}", flush=True)
+            return
 
-        # Check for existing checkpoint
-        uploaded_keys = []
-        if checkpoint_file.exists():
-            print(f"\n💾 Found checkpoint file from previous run", flush=True)
-            try:
-                with open(checkpoint_file, 'r') as f:
-                    checkpoint_data = json.load(f)
-                    uploaded_keys = [
-                        BatchPayloadItemManagedFile(key=item['key'], file_name=item['file_name'])
-                        for item in checkpoint_data['uploaded_keys']
-                    ]
-                    uploaded_count = checkpoint_data['uploaded_count']
-                    skipped_count = 0  # No failures when loading from checkpoint
-                print(f"✅ Loaded {uploaded_count} uploaded files from checkpoint", flush=True)
-                print(f"⏭️  Skipping to Phase 2 (job creation)...", flush=True)
-            except Exception as e:
-                print(f"⚠️  Failed to load checkpoint: {e}", flush=True)
-                print(f"🔄 Starting fresh upload...", flush=True)
-                uploaded_keys = []
+        print(f"\n📊 Found {len(surah_dirs)} surahs to process", flush=True)
 
-        # Find all text files
-        text_files = list(sections_dir.rglob("*.txt"))
-        total_files = len(text_files)
+        # Process each surah as a separate batch
+        for surah_dir in surah_dirs:
+            surah_name = surah_dir.name  # e.g., "surah-001"
+            text_files = list(surah_dir.glob("*.txt"))
+            
+            if not text_files:
+                print(f"\n⚠️  {surah_name}: No text files found, skipping", flush=True)
+                continue
 
-        # Phase 1: Upload files and collect keys (skip if checkpoint loaded)
-        if not uploaded_keys:
-            print(f"\n📊 Found {total_files} section files", flush=True)
-            print("\n📤 PHASE 1: Uploading files to S3...", flush=True)
+            print(f"\n📖 Processing {surah_name} ({len(text_files)} sections)", flush=True)
+
+            # Upload files for this surah
+            uploaded_keys = []
             uploaded_count = 0
             skipped_count = 0
             current_surah = None
 
-            for idx, text_file in enumerate(text_files, 1):
+            for text_file in text_files:
                 metadata_file = text_file.parent / f"{text_file.stem}.metadata.json"
 
                 if not metadata_file.exists():
@@ -502,83 +492,41 @@ class TafsirConverter:
 
                     uploaded_keys.append(BatchPayloadItemManagedFile(
                         key=upload_result.data.key,
-                        file_name=text_file.name
+                        file_name=text_file.name,
+                        config=IngestJobConfig(metadata=metadata)
                     ))
                     uploaded_count += 1
-
-                    # Progress every 50 files
-                    if idx % 50 == 0 or idx == total_files:
-                        print(f"   {idx}/{total_files} uploaded", flush=True)
 
                 except Exception as e:
                     print(f"   ❌ {text_file.name}: {str(e)}", flush=True)
                     skipped_count += 1
 
-            # Save checkpoint after Phase 1
-            print(f"\n💾 Saving checkpoint...", flush=True)
-            checkpoint_data = {
-                'uploaded_count': uploaded_count,
-                'uploaded_keys': [{'key': k.key, 'file_name': k.file_name} for k in uploaded_keys]
-            }
-            with open(checkpoint_file, 'w') as f:
-                json.dump(checkpoint_data, f)
-            print(f"✅ Checkpoint saved ({uploaded_count} files)", flush=True)
+            if not uploaded_keys:
+                print(f"   ❌ No files uploaded successfully for {surah_name}", flush=True)
+                continue
 
-        if not uploaded_keys:
-            print("\n❌ No files uploaded successfully", flush=True)
-            return
+            print(f"   ✅ Uploaded {uploaded_count} files ({skipped_count} failed)", flush=True)
 
-        print(f"\n✅ Upload complete: {uploaded_count} files ({skipped_count} failed)", flush=True)
-
-        # Phase 2: Create batch ingest job
-        print(f"\n🔄 PHASE 2: Creating ingest job...", flush=True)
-        try:
-            batch_payload = BatchPayload(items=uploaded_keys)
-            job = client.ingest_jobs.create(
-                payload=batch_payload,
-                name=f"{tafsir_name}-tafsir"
-            )
-            job_id = job.data.id
-            print(f"✅ Job created: {job_id}", flush=True)
-        except Exception as e:
-            print(f"❌ Failed to create job: {str(e)}", flush=True)
-            return
-
-        # Phase 3: Poll job status
-        print(f"\n⏳ PHASE 3: Processing ({uploaded_count} sections)...", flush=True)
-        poll_count = 0
-        max_polls = 600  # 10 minutes
-
-        while poll_count < max_polls:
+            # Create batch ingest job for this surah
             try:
-                job_status = client.ingest_jobs.get(job_id=job_id)
-                status = job_status.data.status
-
-                if status == "COMPLETED":
-                    print(f"\n🎉 SUCCESS! All {uploaded_count} sections ingested", flush=True)
-                    # Clean up checkpoint file
-                    if checkpoint_file.exists():
-                        checkpoint_file.unlink()
-                        print(f"🗑️  Checkpoint file deleted", flush=True)
-                    return
-                elif status == "FAILED":
-                    print(f"\n❌ Job FAILED", flush=True)
-                    if hasattr(job_status, 'error'):
-                        print(f"   {job_status.error}", flush=True)
-                    print(f"💾 Checkpoint preserved - you can retry from Phase 2", flush=True)
-                    return
-                elif poll_count % 10 == 0:
-                    print(f"   {status}... ({poll_count}s)", flush=True)
-
-                time.sleep(1)
-                poll_count += 1
-
+                batch_payload = BatchPayload(items=uploaded_keys)
+                job = client.ingest_jobs.create(
+                    payload=batch_payload,
+                    name=f"{tafsir_name}-{surah_name}",
+                    external_id=f"{tafsir_name}-{surah_name}",
+                    config={   
+                        "chunk_size": 4096,
+                        "max_chunk_size": 4528,
+                        "chunk_overlap": 256, 
+                    }
+                )
+                job_id = job.data.id
+                print(f"   ✅ Batch job created: {job_id}", flush=True)
             except Exception as e:
-                print(f"   ⚠️  {str(e)}", flush=True)
-                time.sleep(1)
-                poll_count += 1
+                print(f"   ❌ Failed to create batch job: {str(e)}", flush=True)
+                continue
 
-        print(f"\n⏱️  Timeout after {poll_count}s - check job {job_id}", flush=True)
+        print(f"\n🎉 All batches pushed to Agentset!", flush=True)
 
     def deduplicate_agentset(self, api_token: Optional[str] = None, namespace_id: Optional[str] = None, dry_run: bool = True, keep: str = "oldest") -> None:
         """Find and remove duplicate documents from Agentset.
