@@ -93,13 +93,15 @@ def convert_agentset(
 
 @app.command()
 def ingest_agentset(
-    tafsir_name: str = typer.Argument(..., help="Name of the tafsir to ingest")
+    tafsir_name: str = typer.Argument(..., help="Name of the tafsir to ingest"),
+    api_token: str = typer.Option(None, help="Agentset API token (or set AGENTSET_API_TOKEN)"),
+    namespace_id: str = typer.Option(None, help="Agentset namespace ID (or set AGENTSET_NAMESPACE_ID)")
 ):
-    """Ingest generated Agentset files (stub for future implementation)."""
+    """Ingest generated Agentset files using individual file uploads."""
     console.print(f"[bold blue]Ingesting {tafsir_name} to Agentset...[/bold blue]")
     converter = TafsirConverter()
-    converter.ingest_to_agentset(tafsir_name)
-    console.print("[yellow]Note: This is a stub - actual Agentset ingestion not yet implemented[/yellow]")
+    converter.ingest_to_agentset(tafsir_name, api_token=api_token, namespace_id=namespace_id)
+    console.print("[green]✓ Ingestion complete![/green]")
 
 
 if __name__ == "__main__":

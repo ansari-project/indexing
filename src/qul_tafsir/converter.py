@@ -389,16 +389,30 @@ class TafsirConverter:
 
                 self.logger.info(f"Completed surah {surah}")
 
-    def ingest_to_agentset(self, tafsir_name: str, output_dir: Optional[Path] = None) -> None:
+    def ingest_to_agentset(self, tafsir_name: str, output_dir: Optional[Path] = None, api_token: Optional[str] = None, namespace_id: Optional[str] = None) -> None:
         """
-        Ingest generated tafsir files into Agentset.
-
-        This is a stub implementation for future Agentset SDK integration.
+        Ingest generated tafsir files into Agentset using individual uploads.
 
         Args:
             tafsir_name: The name of the tafsir to ingest
             output_dir: Directory containing the generated files (defaults to ./output)
+            api_token: Agentset API token (uses AGENTSET_API_TOKEN env var if not provided)
+            namespace_id: Agentset namespace ID (uses AGENTSET_NAMESPACE_ID env var if not provided)
         """
+        import os
+        from agentset import Agentset
+
+        # Get API credentials
+        token = api_token or os.getenv("AGENTSET_API_TOKEN")
+        namespace = namespace_id or os.getenv("AGENTSET_NAMESPACE_ID")
+
+        if not token:
+            self.logger.error("AGENTSET_API_TOKEN not provided and not found in environment")
+            return
+        if not namespace:
+            self.logger.error("AGENTSET_NAMESPACE_ID not provided and not found in environment")
+            return
+
         output_base = output_dir or Path("./output").absolute()
         sections_dir = output_base / tafsir_name / "sections"
 
@@ -406,26 +420,57 @@ class TafsirConverter:
             self.logger.error(f"Sections directory not found: {sections_dir}")
             return
 
+        # Initialize Agentset client
+        client = Agentset(token=token, namespace_id=namespace)
+
         # Find all text files
         text_files = list(sections_dir.rglob("*.txt"))
         self.logger.info(f"Found {len(text_files)} section files to ingest")
 
+        uploaded_count = 0
+        skipped_count = 0
+
         for text_file in text_files:
             metadata_file = text_file.parent / f"{text_file.stem}.metadata.json"
-            if metadata_file.exists():
-                self.logger.info(f"Would ingest: {text_file} with metadata {metadata_file}")
-            else:
-                self.logger.warning(f"Missing metadata for: {text_file}")
 
-        # TODO: Implement actual Agentset SDK ingestion
-        # Example:
-        # import agentset
-        # client = agentset.Client(api_key=...)
-        # for text_file in text_files:
-        #     with open(text_file) as f:
-        #         content = f.read()
-        #     with open(metadata_file) as f:
-        #         metadata = json.load(f)
-        #     client.ingest(content=content, metadata=metadata)
+            if not metadata_file.exists():
+                self.logger.warning(f"Missing metadata for: {text_file}, skipping")
+                skipped_count += 1
+                continue
 
-        self.logger.info("Ingest stub completed - actual Agentset integration not yet implemented")
+            try:
+                # Read content and metadata
+                with open(text_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                with open(metadata_file, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+
+                # Get file size
+                file_size = text_file.stat().st_size
+
+                # Create presigned URL for upload
+                self.logger.info(f"Uploading: {text_file.name}")
+                upload_result = client.uploads.create(
+                    file_name=text_file.name,
+                    content_type="text/plain",
+                    file_size=float(file_size)
+                )
+
+                # Upload the file using the presigned URL
+                import requests
+                headers = {"Content-Type": "text/plain"}
+                response = requests.put(
+                    upload_result.upload_url,
+                    data=content.encode('utf-8'),
+                    headers=headers
+                )
+                response.raise_for_status()
+
+                uploaded_count += 1
+                self.logger.info(f"✓ Uploaded: {text_file.name}")
+
+            except Exception as e:
+                self.logger.error(f"Failed to upload {text_file.name}: {str(e)}")
+                skipped_count += 1
+
+        self.logger.info(f"Ingestion complete: {uploaded_count} uploaded, {skipped_count} skipped")
