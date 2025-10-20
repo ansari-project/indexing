@@ -97,3 +97,43 @@ Each converter should have:
 - Python 3.11+ is required
 - Always test with sample data first
 - Monitor API usage to avoid unexpected costs
+
+## Codev Methodology
+
+This project uses the Codev context-driven development methodology.
+
+### Active Protocol
+- Protocol: SPIDER (with multi-agent consultation via Zen MCP)
+- Location: `codev/protocols/spider/protocol.md`
+
+### Directory Structure
+- Specifications: `codev/specs/`
+- Plans: `codev/plans/`
+- Reviews: `codev/reviews/`
+- Resources: `codev/resources/`
+
+### Development Flow
+For new features or significant changes, follow the SPIDER protocol:
+- **S**pecify - Define what to build in clear, unambiguous language
+- **P**lan - Break specifications into executable phases
+- **For each phase:** **I**mplement → **D**efend → **E**valuate
+  - **Implement**: Build the code to meet phase objectives
+  - **Defend**: Write comprehensive tests that protect your code
+  - **Evaluate**: Verify requirements are met, get user approval, then commit
+- **R**eview - Capture lessons and improve the methodology
+
+### Multi-Agent Consultation
+When using SPIDER protocol, consult external AI models (GPT-5, Gemini Pro) via Zen MCP for:
+- Specification reviews
+- Plan reviews
+- Implementation phase reviews
+
+### Document Naming Convention
+Use `####-descriptive-name.md` format for all specs, plans, and reviews (e.g., `0001-fiqh-card-converter.md`)
+
+### Git Integration with SPIDER
+- Each stage gets one pull request
+- Phases can have multiple commits within the PR
+- User approval required before creating PRs
+
+See `codev/protocols/spider/protocol.md` for full protocol details.
