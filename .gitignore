@@ -51,6 +51,7 @@ debug_json.ipynb
 # Project specific
 downloads/
 tmp/
+output/
 *.sqlite
 *.sqlite.bz2
 *.bz2

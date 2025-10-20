@@ -19,13 +19,14 @@ class TafsirConverter:
         "ibn-kathir": "https://s3.us-east-1.wasabisys.com/static-cdn.tarteel.ai/qul-exports/tafsir/1722592431-won0o-en-tafisr-ibn-kathir.db.bz2",
     }
 
-    def __init__(self, corpus_key: str = "tafsirs", downloads_dir: Optional[Path] = None):
+    def __init__(self, corpus_key: str = "tafsirs", downloads_dir: Optional[Path] = None, init_vectara: bool = False):
         """
         Initialize the TafsirConverter.
 
         Args:
             corpus_key: The Vectara corpus key to use.
             downloads_dir: Directory for downloads (defaults to ./downloads).
+            init_vectara: Whether to initialize Vectara client (only needed for Vectara operations).
         """
         self.corpus_key = corpus_key
         self.downloads_dir = downloads_dir or Path("./downloads").absolute()
@@ -34,9 +35,12 @@ class TafsirConverter:
         self.logger = logging.getLogger("tafsir_converter")
         self.logger.setLevel(logging.INFO)
 
-        # Initialize Vectara client
-        self.client = Factory(profile="lab").build()
-        self.manager = self.client.corpus_manager
+        # Initialize Vectara client only when needed
+        self.client = None
+        self.manager = None
+        if init_vectara:
+            self.client = Factory(profile="lab").build()
+            self.manager = self.client.corpus_manager
 
     def ayah_key_to_int(self, ayah_key: str) -> int:
         """
@@ -247,3 +251,158 @@ class TafsirConverter:
         )
         self.logger.info(f"Result: {response}")
         return response
+
+    def _generate_section_metadata(
+        self,
+        tafsir_name: str,
+        surah: int,
+        ayah_key: str,
+        group_ayah_key: str,
+        from_ayah: str,
+        to_ayah: str,
+        ayah_keys: str,
+    ) -> dict:
+        """
+        Generate metadata dictionary for a tafsir section.
+
+        Args:
+            tafsir_name: Name of the tafsir (e.g., 'ibn-kathir')
+            surah: Surah number
+            ayah_key: The ayah key for this section
+            group_ayah_key: The group ayah key (unique identifier)
+            from_ayah: Starting ayah in format "surah:ayah"
+            to_ayah: Ending ayah in format "surah:ayah"
+            ayah_keys: Comma-separated list of ayah keys in this section
+
+        Returns:
+            Dictionary containing metadata for the section
+        """
+        return {
+            "tafsir_name": tafsir_name,
+            "surah": surah,
+            "ayah_key": ayah_key,
+            "group_ayah_key": group_ayah_key,
+            "from_ayah": from_ayah,
+            "to_ayah": to_ayah,
+            "from_ayah_int": self.ayah_key_to_int(from_ayah),
+            "to_ayah_int": self.ayah_key_to_int(to_ayah),
+            "ayah_keys": ayah_keys,
+        }
+
+    def convert_to_agentset(
+        self, tafsir_name: str, surah_range: Tuple[int, int] = (1, 2), output_dir: Optional[Path] = None
+    ) -> None:
+        """
+        Convert tafsir sqlite file to agentset format.
+
+        Creates individual text files with metadata for each tafsir section.
+        Each section covers a range of ayahs and is stored as a separate file.
+
+        Args:
+            tafsir_name: The name of the tafsir to convert (e.g., 'ibn-kathir')
+            surah_range: The range of surahs to convert (start, end)
+            output_dir: Directory for output files (defaults to ./output)
+        """
+        db_path = self.downloads_dir / f"{tafsir_name}.sqlite"
+        output_base = output_dir or Path("./output").absolute()
+
+        # Use a context manager to connect to the sqlite database
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+
+            for surah in range(*surah_range):
+                # Create output directory for this surah
+                surah_dir = output_base / tafsir_name / "sections" / f"surah-{surah:03d}"
+                surah_dir.mkdir(parents=True, exist_ok=True)
+
+                # Fetch all sections for the current surah
+                cursor.execute(
+                    """
+                    SELECT ayah_key, group_ayah_key, from_ayah, to_ayah, ayah_keys, text
+                    FROM tafsir
+                    WHERE ayah_key LIKE ?;
+                    """,
+                    (f"{surah}:%",),
+                )
+                sections = cursor.fetchall()
+
+                self.logger.info(f"Processing {len(sections)} sections for surah {surah}")
+
+                for section in sections:
+                    ayah_key, group_ayah_key, from_ayah, to_ayah, ayah_keys, html_text = section
+
+                    # Strip HTML tags to get plain text
+                    soup = BeautifulSoup(html_text, "html.parser")
+                    plain_text = soup.get_text(separator="\n", strip=True)
+
+                    if not plain_text:
+                        self.logger.warning(f"Empty text for section {group_ayah_key}, skipping")
+                        continue
+
+                    # Generate filenames
+                    section_filename = f"section-{group_ayah_key}.txt"
+                    metadata_filename = f"section-{group_ayah_key}.metadata.json"
+
+                    # Write text file
+                    text_path = surah_dir / section_filename
+                    with open(text_path, "w", encoding="utf-8") as f:
+                        f.write(plain_text)
+
+                    # Generate and write metadata
+                    metadata = self._generate_section_metadata(
+                        tafsir_name=tafsir_name,
+                        surah=surah,
+                        ayah_key=ayah_key,
+                        group_ayah_key=group_ayah_key,
+                        from_ayah=from_ayah,
+                        to_ayah=to_ayah,
+                        ayah_keys=ayah_keys,
+                    )
+                    metadata_path = surah_dir / metadata_filename
+                    with open(metadata_path, "w", encoding="utf-8") as f:
+                        json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+                    self.logger.info(f"Created section {group_ayah_key}: {text_path}")
+
+                self.logger.info(f"Completed surah {surah}")
+
+    def ingest_to_agentset(self, tafsir_name: str, output_dir: Optional[Path] = None) -> None:
+        """
+        Ingest generated tafsir files into Agentset.
+
+        This is a stub implementation for future Agentset SDK integration.
+
+        Args:
+            tafsir_name: The name of the tafsir to ingest
+            output_dir: Directory containing the generated files (defaults to ./output)
+        """
+        output_base = output_dir or Path("./output").absolute()
+        sections_dir = output_base / tafsir_name / "sections"
+
+        if not sections_dir.exists():
+            self.logger.error(f"Sections directory not found: {sections_dir}")
+            return
+
+        # Find all text files
+        text_files = list(sections_dir.rglob("*.txt"))
+        self.logger.info(f"Found {len(text_files)} section files to ingest")
+
+        for text_file in text_files:
+            metadata_file = text_file.parent / f"{text_file.stem}.metadata.json"
+            if metadata_file.exists():
+                self.logger.info(f"Would ingest: {text_file} with metadata {metadata_file}")
+            else:
+                self.logger.warning(f"Missing metadata for: {text_file}")
+
+        # TODO: Implement actual Agentset SDK ingestion
+        # Example:
+        # import agentset
+        # client = agentset.Client(api_key=...)
+        # for text_file in text_files:
+        #     with open(text_file) as f:
+        #         content = f.read()
+        #     with open(metadata_file) as f:
+        #         metadata = json.load(f)
+        #     client.ingest(content=content, metadata=metadata)
+
+        self.logger.info("Ingest stub completed - actual Agentset integration not yet implemented")

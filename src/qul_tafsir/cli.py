@@ -40,7 +40,7 @@ def convert(
 ):
     """Convert tafsir to Vectara format and upload."""
     console.print(f"[bold blue]Converting {tafsir_name} (surahs {start_surah}-{end_surah-1})...[/bold blue]")
-    converter = TafsirConverter()
+    converter = TafsirConverter(init_vectara=True)
     converter.convert_to_vectara(tafsir_name, surah_range=(start_surah, end_surah))
     console.print("[green]✓ Conversion complete![/green]")
 
@@ -53,7 +53,7 @@ def process(
 ):
     """Download, generate mapping, and convert tafsir (complete pipeline)."""
     console.print(f"[bold blue]Processing {tafsir_name}...[/bold blue]")
-    converter = TafsirConverter()
+    converter = TafsirConverter(init_vectara=True)
 
     console.print("1. Downloading...")
     converter.download_tafsir(tafsir_name)
@@ -70,12 +70,36 @@ def process(
 @app.command()
 def test_query():
     """Test query to verify upload was successful."""
-    converter = TafsirConverter()
+    converter = TafsirConverter(init_vectara=True)
     result = converter.query_test(
         query="What is the significance of comparing women to coral?",
         metadata_filter="part.to_ayah_int >= 55058 and part.from_ayah_int <= 55058"
     )
     console.print("[green]✓ Query test complete![/green]")
+
+
+@app.command()
+def convert_agentset(
+    tafsir_name: str = typer.Argument(..., help="Name of the tafsir (e.g., 'ibn-kathir')"),
+    start_surah: int = typer.Option(1, help="Starting surah number"),
+    end_surah: int = typer.Option(2, help="Ending surah number (exclusive)")
+):
+    """Convert tafsir to Agentset format (individual files with metadata)."""
+    console.print(f"[bold blue]Converting {tafsir_name} to Agentset format (surahs {start_surah}-{end_surah-1})...[/bold blue]")
+    converter = TafsirConverter()
+    converter.convert_to_agentset(tafsir_name, surah_range=(start_surah, end_surah))
+    console.print(f"[green]✓ Conversion complete! Files saved to output/{tafsir_name}/sections/[/green]")
+
+
+@app.command()
+def ingest_agentset(
+    tafsir_name: str = typer.Argument(..., help="Name of the tafsir to ingest")
+):
+    """Ingest generated Agentset files (stub for future implementation)."""
+    console.print(f"[bold blue]Ingesting {tafsir_name} to Agentset...[/bold blue]")
+    converter = TafsirConverter()
+    converter.ingest_to_agentset(tafsir_name)
+    console.print("[yellow]Note: This is a stub - actual Agentset ingestion not yet implemented[/yellow]")
 
 
 if __name__ == "__main__":
